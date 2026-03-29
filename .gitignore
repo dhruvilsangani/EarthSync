@@ -1,0 +1,11 @@
+# Jupyter Notebooks
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# Python environment/compilation
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+es_env/
+.env

@@ -177,9 +177,8 @@ plt.show()
 # %%
 What i believe should be the variables over which the next day bids would depend should be
 1. Previous few days purchase bids of that particular period
-2. Previous few days purchase bids of period surrounding that particular period
-3. If i can get the whole previous 2-3 days to forecast next days energy bids, that should be perfect.
-4. is_weekend
+2. Previous few days purchase bids of period surrounding that particular period # not needed
+3. If i can get the whole previous 2-3 days to forecast next days energy bids, that should be perfect. # not needed
 5. week day enum
 6. period_enum
 
@@ -193,19 +192,23 @@ data["weekday_enum"] = data["period_start"].dt.weekday + 1
 # and lag 97 is "15 mins before same time yesterday"
 
 data["pb_lag1d"] = data["purchase_bid"].shift(96)
-data["sb_lag1d"] = data["purchase_bid"].shift(96)
+data["sb_lag1d"] = data["sell_bid"].shift(96)
 
-# Neighbors (Looking at the "Shape" around the same time yesterday)
-data["pb_lag1d_plus1"] = data["purchase_bid"].shift(96 - 1)  # 15 mins after
-data["pb_lag1d_plus2"] = data["purchase_bid"].shift(96 - 2)  # 30 mins after
-data["pb_lag1d_minus1"] = data["purchase_bid"].shift(96 + 1) # 15 mins before
-data["pb_lag1d_minus2"] = data["purchase_bid"].shift(96 + 2) # 30 mins before
+data["pb_lag2d"] = data["purchase_bid"].shift(192)
+data["sb_lag2d"] = data["sell_bid"].shift(192)
 
-# Do the same for Sell Bids to give the model a view of supply-side "shape"
-data["sb_lag1d_plus1"] = data["sell_bid"].shift(96 - 1)
-data["sb_lag1d_plus2"] = data["sell_bid"].shift(96 - 2)
-data["sb_lag1d_minus1"] = data["sell_bid"].shift(96 + 1)
-data["sb_lag1d_minus2"] = data["sell_bid"].shift(96 + 2)
+## The below are not of much help
+# # Neighbors (Looking at the "Shape" around the same time yesterday)
+# data["pb_lag1d_plus1"] = data["purchase_bid"].shift(96 - 1)  # 15 mins after
+# data["pb_lag1d_plus2"] = data["purchase_bid"].shift(96 - 2)  # 30 mins after
+# data["pb_lag1d_minus1"] = data["purchase_bid"].shift(96 + 1) # 15 mins before
+# data["pb_lag1d_minus2"] = data["purchase_bid"].shift(96 + 2) # 30 mins before
+
+# # Do the same for Sell Bids to give the model a view of supply-side "shape"
+# data["sb_lag1d_plus1"] = data["sell_bid"].shift(96 - 1)
+# data["sb_lag1d_plus2"] = data["sell_bid"].shift(96 - 2)
+# data["sb_lag1d_minus1"] = data["sell_bid"].shift(96 + 1)
+# data["sb_lag1d_minus2"] = data["sell_bid"].shift(96 + 2)
 
 # Drop the new NaNs created by the larger shifts
 data_clean = data.dropna()
@@ -213,11 +216,63 @@ data_clean = data.dropna()
 print(f"New feature count: {len(data_clean.columns)}")
 data_clean.head()
 
+# %% [markdown]
+# ### TSA decompose
+
+# %%
+from statsmodels.tsa.seasonal import seasonal_decompose
+
+# 1. Ensure your index has a frequency (required for seasonal_decompose)
+indexed_data = data.set_index('period_start')
+indexed_data = indexed_data.asfreq('15min')
+
+# 2. Perform Classical Decomposition
+result = seasonal_decompose(indexed_data['purchase_bid'], model='additive', period=96)
+
+# 3. Save the residuals
+indexed_data['pb_resid'] = result.resid
+
+# 4. Plot using matplotlib
+plt.rcParams['figure.figsize'] = (12, 8)
+result.plot()
+plt.show()
+
+# %% [markdown]
+# ## 
+
+# %%
+import matplotlib.pyplot as plt
+
+fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+fig.suptitle("ACF & PACF — Purchase Bid and Sell Bid", fontsize=14, fontweight="bold")
+
+plot_acf(data["purchase_bid"].diff(96).diff().dropna(),  lags=400, ax=axes[0, 0], title="ACF — Purchase Bid")
+plot_pacf(data["purchase_bid"].diff(96).diff().dropna(), lags=400, ax=axes[0, 1], title="PACF — Purchase Bid")
+plot_acf(data["sell_bid"].diff(96).diff().dropna(),      lags=400, ax=axes[1, 0], title="ACF — Sell Bid")
+plot_pacf(data["sell_bid"].diff(96).diff().dropna(),     lags=400, ax=axes[1, 1], title="PACF — Sell Bid")
+
+# plot_acf(data["purchase_bid"].dropna(),  lags=200, ax=axes[0, 0], title="ACF — Purchase Bid")
+# plot_pacf(data["purchase_bid"].dropna(), lags=200, ax=axes[0, 1], title="PACF — Purchase Bid")
+# plot_acf(data["sell_bid"].dropna(),      lags=200, ax=axes[1, 0], title="ACF — Sell Bid")
+# plot_pacf(data["sell_bid"].dropna(),     lags=200, ax=axes[1, 1], title="PACF — Sell Bid")
+
+for ax in axes.flat:
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.grid(True, linestyle="--", alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+
+# %%
+
 # %%
 
 # %%
 
 # %%
+
+# %% [markdown] jp-MarkdownHeadingCollapsed=true
+# ### Checking if we can fit individual time series for each period. Seems like ARIMA(1,1,1) can work.
 
 # %%
 period_enum = 64
@@ -225,8 +280,8 @@ period_enum = 64
 fig = go.Figure()
 
 fig.add_trace(go.Scatter(
-    x=data[data["period_num"] == period_enum]["period_start"],
-    y=data[data["period_num"] == period_enum]["purchase_bid"],
+    x=data[data["period_enum"] == period_enum]["period_start"],
+    y=data[data["period_enum"] == period_enum]["purchase_bid"],
     mode="lines+markers",
     line=dict(color="#378ADD", width=2),
     marker=dict(size=4),
@@ -234,8 +289,8 @@ fig.add_trace(go.Scatter(
 ))
 
 fig.add_trace(go.Scatter(
-    x=data[data["period_num"] == period_enum]["period_start"],
-    y=data[data["period_num"] == period_enum]["sell_bid"],
+    x=data[data["period_enum"] == period_enum]["period_start"],
+    y=data[data["period_enum"] == period_enum]["sell_bid"],
     mode="lines+markers",
     line=dict(color="#378ADD", width=2),
     marker=dict(size=4),
@@ -252,216 +307,43 @@ fig.update_layout(
 )
 
 fig.show("notebook")
+plot_acf(data[data["period_enum"] == period_enum]["purchase_bid"], lags=15)
+
+# %% [markdown]
+# ### Seeing if uncleared volume can work as a predictor. It can act as a predictor but its correlated with purchase bids.
 
 # %%
-period_enum = 55
-plot_pacf(data[data["period_num"] == period_enum]["purchase_bid"], lags=15)
+data["ucv"] = data["purchase_bid"] - data["mcv"]
+from statsmodels.tsa.stattools import grangercausalitytests
+# Test if 'ucv' helps predict 'purchase_bid' up to 4 days (lags)
+grangercausalitytests(data[['purchase_bid', 'ucv']], maxlag=4)
 
-# %%
-plot_acf(data["purchase_bid"], lags = 100)
+data['ucv_lag24h'] = data['ucv'].shift(96)
 
-# %%
+# 2. Calculate the "Bid Change" (Today's bid vs Yesterday's bid)
+# This helps see if high UCV leads to an *increase* in bidding volume
+data['pb_change'] = data['purchase_bid'] - data['pb_lag1d']
 
-# %%
+# 3. Filter for a specific period (e.g., 04:00 AM / Block 17) to reduce noise
+block_17_data = data[data['period_num'] == 62].dropna()
 
-# %%
+# 4. Correlation Analysis
+correlation = block_17_data['ucv_lag24h'].corr(block_17_data['pb_change'])
+print(f"Correlation between Yesterday's UCV and Today's Purchase Bid (Block 17): {correlation:.4f}")
 
-# %%
-result = adfuller(data[data["period_num"] == 36]["purchase_bid"].diff().dropna())
-result[1]
+# 5. Visualization
+plt.figure(figsize=(10, 6))
+sns.regplot(data=block_17_data, x='ucv_lag24h', y='pb_change', 
+            scatter_kws={'alpha':0.5, 'color':'#378ADD'}, 
+            line_kws={'color':'red', 'ls':'--'})
 
-# %%
-ARIMA(1, 1, 2) 
-
-# %%
-
-# %%
-
-# %%
-
-# %%
-# Ensure your index has a frequency
-indexed_data = data.set_index('period_start')
-indexed_data = indexed_data.asfreq('15min') 
-
-stl = STL(indexed_data['purchase_bid'], period=96, seasonal=7, trend = 96*3+1)
-res = stl.fit()
-
-# The 'resid' is your de-trended and de-seasonalized data
-indexed_data['pb_resid'] = res.resid
-res.plot()
+plt.title("Impact of Yesterday's Uncleared Volume on Today's Purchase Bid (04:00 AM)", fontsize=14)
+plt.xlabel("Uncleared Volume (UCV) Yesterday [MW]", fontsize=12)
+plt.ylabel("Purchase Bid Today [MW]", fontsize=12)
+plt.grid(True, linestyle='--', alpha=0.6)
 plt.show()
 
 # %%
-from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
-
-plot_acf(res.resid, lags=100)
-# plot_pacf(res.resid, lags=100)
-
-# %%
-from statsmodels.tsa.stattools import adfuller
-result = adfuller(data.purchase_bid.diff().dropna())
-result[1]
-
-# %%
-plot_pacf(data.purchase_bid.dropna(), lags=300)
-
-# %%
-
-# %%
-
-# %%
-
-# %%
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-
-# 1. Prepare the components from your 'res' object
-components = {
-    "Observed": res.observed,
-    "Trend": res.trend,
-    "Seasonal": res.seasonal,
-    "Residuals": res.resid
-}
-
-# 2. Create subplots
-fig = make_subplots(
-    rows=4, cols=1, 
-    shared_xaxes=True, 
-    vertical_spacing=0.05,
-    subplot_titles=list(components.keys())
-)
-
-# 3. Add traces
-for i, (name, series) in enumerate(components.items(), start=1):
-    fig.add_trace(
-        go.Scatter(
-            x=series.index, 
-            y=series, 
-            name=name,
-            line=dict(width=1.5),
-            mode='lines'
-        ),
-        row=i, col=1
-    )
-
-# 4. Update layout for better readability
-fig.update_layout(
-    height=900, 
-    title_text="STL Decomposition of Purchase Bid",
-    showlegend=False,
-    template="plotly_white"
-)
-
-# Optional: Add a zero-line for the Residuals subplot
-fig.add_hline(y=0, line_dash="dash", line_color="gray", row=4, col=1)
-
-fig.show()
-
-# %%
-
-# %%
-
-# %%
-
-# %%
-
-# %%
-import pandas as pd
-from statsmodels.tsa.statespace.sarimax import SARIMAX
-
-# 1. Create a "Shock" indicator for the March 13-17 dip
-data['weather_shock'] = 0
-data.loc['2026-03-13':'2026-03-17', 'weather_shock'] = 1
-
-# 2. Add weekend/weekday info (highly correlated with industrial bids)
-data['is_weekend'] = (data.index.weekday >= 5).astype(int)
-
-# 3. Fit SARIMAX with these as external inputs
-# This tells the model: "The drop here is due to 'weather_shock', don't assume it's part of the normal trend."
-exog_cols = ['is_weekend', 'weather_shock']
-model = SARIMAX(data['purchase_bid'], 
-                exog=data[exog_cols], 
-                order=(1, 1, 1), 
-                seasonal_order=(1, 1, 1, 96))
-
-results = model.fit()
-
-# %%
-print(results.summary())
-
-# %%
-# 1. Prepare future exogenous data for the next 96 periods (24 hours)
-last_date = data.index[-1]
-forecast_index = pd.date_range(start=last_date + pd.Timedelta(minutes=15), periods=96, freq='15min')
-
-future_exog = pd.DataFrame(index=forecast_index)
-future_exog['is_weekend'] = (future_exog.index.weekday >= 5).astype(int)
-future_exog['weather_shock'] = 0  # Assuming the shock has ended
-
-# 2. Get the forecast
-forecast_res = results.get_forecast(steps=96, exog=future_exog)
-forecast_mean = forecast_res.summary_frame()['mean']
-conf_int = forecast_res.conf_int()
-
-# %%
-fig = go.Figure()
-
-# Plot recent actual data (last 3 days for context)
-recent_data = data.tail(96 * 3)
-fig.add_trace(go.Scatter(x=recent_data.index, y=recent_data['purchase_bid'], 
-                         name='Actual', line=dict(color='#378ADD')))
-
-# Plot Forecast
-fig.add_trace(go.Scatter(x=forecast_mean.index, y=forecast_mean, 
-                         name='Forecast', line=dict(color='red', dash='dash')))
-
-# Plot Confidence Interval (shaded area)
-fig.add_trace(go.Scatter(x=forecast_mean.index.tolist() + forecast_mean.index[::-1].tolist(),
-                         y=conf_int['upper purchase_bid'].tolist() + conf_int['lower purchase_bid'][::-1].tolist(),
-                         fill='toself', fillcolor='rgba(255,0,0,0.1)', line=dict(color='rgba(255,0,0,0)'),
-                         hoverinfo="skip", name='95% Confidence Interval'))
-
-fig.update_layout(title="24-Hour Purchase Bid Forecast", 
-                  xaxis_title="Time", yaxis_title="MW",
-                  template="plotly_white", hovermode="x unified")
-fig.show()
-
-# %%
-
-# %%
-
-# %%
-
-# %%
-
-# %%
-
-# %%
-
-# %%
-
-# %%
-import matplotlib.pyplot as plt
-
-
-fig, axes = plt.subplots(2, 2, figsize=(14, 8))
-fig.suptitle("ACF & PACF — Purchase Bid and Sell Bid", fontsize=14, fontweight="bold")
-
-plot_acf(data["purchase_bid"].dropna(),  lags=100, ax=axes[0, 0], title="ACF — Purchase Bid")
-plot_pacf(data["purchase_bid"].dropna(), lags=100, ax=axes[0, 1], title="PACF — Purchase Bid")
-plot_acf(data["sell_bid"].dropna(),      lags=100, ax=axes[1, 0], title="ACF — Sell Bid")
-plot_pacf(data["sell_bid"].dropna(),     lags=100, ax=axes[1, 1], title="PACF — Sell Bid")
-
-for ax in axes.flat:
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.grid(True, linestyle="--", alpha=0.3)
-
-plt.tight_layout()
-plt.show()
-
-# %%
-data["purchase_bid"].dropna()
 
 # %%
 from statsmodels.tsa.stattools import adfuller
@@ -485,12 +367,6 @@ def perform_adf_test(series):
 perform_adf_test(data['purchase_bid'])
 
 # %%
-# Assuming 15-min data (96 blocks per day)
-seasonal_diff = data['purchase_bid'].diff(96).dropna()
-seasonal_diff.plot()
-
-# %%
-seasonal_diff
 
 # %%
 
@@ -498,9 +374,7 @@ seasonal_diff
 
 # %%
 
-# %%
-
-# %%
+# %% jupyter={"outputs_hidden": true}
 
 # %%
 
@@ -539,9 +413,6 @@ plt.savefig("diff_bid_histogram.png", dpi=150, bbox_inches="tight")
 plt.show()
 
 # %%
-
-# x = data[data.mcp!=10000]["diff_bid_norm"].dropna()
-
 x = data[data.mcp!=10000]["ratio_bid"].dropna()
 y = data["mcp"].dropna()
 

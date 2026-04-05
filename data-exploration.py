@@ -25,7 +25,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # %%
-data = pd.read_csv("../../Downloads/iex_dam_feb_mar_2026.csv")
+data = pd.read_csv("../../Downloads/iex-dam-0201-0402.csv")
 
 # %%
 data
@@ -309,7 +309,7 @@ fig.update_layout(
 fig.show("notebook")
 plot_acf(data[data["period_enum"] == period_enum]["purchase_bid"], lags=15)
 
-# %% [markdown]
+# %% [markdown] jp-MarkdownHeadingCollapsed=true
 # ### Seeing if uncleared volume can work as a predictor. It can act as a predictor but its correlated with purchase bids.
 
 # %%

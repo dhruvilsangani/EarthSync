@@ -19,8 +19,9 @@ import pandas as pd
 
 # %%
 # 1. Load the data correctly
-initial_data = pd.read_csv("../../Downloads/iex_dam_feb_mar_2026.csv")
-new_data = pd.read_excel("../../Downloads/DAM_Market Snapshot (1).xlsx")
+# initial_data = pd.read_csv("../../Downloads/iex_dam_feb_mar_2026.csv")
+initial_data = pd.read_csv("../../Downloads/iex-dam-0201-0402.csv")
+new_data = pd.read_excel("../../Downloads/DAM_Market Snapshot (2).xlsx")
 
 # %%
 cleaned_new_data = new_data[4:].dropna().drop(columns = {"Unnamed: 1"}).copy().reset_index(drop=True)

@@ -107,7 +107,7 @@ filtered_data["ds"] = pd.to_datetime(filtered_data["ds"])
 # %%
 from statsforecast import StatsForecast
 from statsforecast.models import Naive, HistoricAverage, WindowAverage, SeasonalNaive
-from statsforecast.models import AutoARIMA, ARIMA
+from statsforecast.models import AutoARIMA, ARIMA, AutoTBATS
 
 # %% [markdown]
 # ### Predict a week in future
@@ -307,8 +307,6 @@ for i, model_obj in enumerate(sf.fitted_[0]):
     print(f"Model {i} ({models[i]}): {model_obj}")
 
 # %%
-
-# %%
 plot_series(
     df=filtered_data, 
     forecasts_df=cv_df.drop(["y", "cutoff"], axis=1), 
@@ -385,11 +383,10 @@ cv_eval_v3 = evaluate(
 cv_eval_v3 = cv_eval_v3.drop(['unique_id'], axis=1).groupby('metric').mean().reset_index()
 cv_eval_v3
 
-# %% [markdown] jp-MarkdownHeadingCollapsed=true
+# %% [markdown]
 # ### Simple Rolling Average
 
 # %%
-import pandas as pd
 
 # 1. Define the parameters for the windows
 # We want to start by predicting the week starting March 13th
@@ -435,5 +432,44 @@ evaluate(
     cv_rolling_df.drop(["cutoff"], axis=1),
     metrics=[mae],
 )
+
+# %% [markdown]
+# ## Trying TBATS
+
+# %%
+filtered_data['y'] = filtered_data['y'] * 1000
+
+# %%
+models = [
+    AutoTBATS(96, use_boxcox=None, bc_lower_bound=0.0, bc_upper_bound=1.0, use_trend=None, use_damped_trend=None, use_arma_errors=True, alias='AutoTBATS')
+]
+
+sf = StatsForecast(models=models, freq="15min")
+cv_df_tbats = sf.cross_validation(
+    h=horizon,
+    df=filtered_data,
+    n_windows=7,
+    step_size=96,
+    refit=True
+)
+
+cv_df_tbats.head()
+
+# %%
+cv_df_tbats['y'] = cv_df_tbats['y'] * 1000
+cv_df_tbats['AutoTBATS'] = cv_df_tbats['AutoTBATS'] * 1000
+
+# %%
+evaluate(
+    cv_df_tbats.drop(["cutoff"], axis=1),
+    metrics=[mae],
+)
+
+# %%
+plot_series(
+    df=filtered_data, 
+    forecasts_df=cv_df_tbats.drop(["y", "cutoff"], axis=1), 
+    max_insample_length=1900, 
+    palette="viridis")
 
 # %%

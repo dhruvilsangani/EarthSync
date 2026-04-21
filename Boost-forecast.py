@@ -51,7 +51,7 @@ data = pd.read_csv("../../Downloads/iex_dam_feb_mar_2026.csv")
 data_indexed = data.set_index('period_start')
 data_indexed = data_indexed.asfreq('15min')
 
-# %% [markdown]
+# %% [markdown] jp-MarkdownHeadingCollapsed=true
 # ### Naive Seasonal Forecast
 
 # %%
@@ -96,7 +96,7 @@ fig.update_layout(
 )
 fig.show()
 
-# %% [markdown]
+# %% [markdown] jp-MarkdownHeadingCollapsed=true
 # ### LightGBM Regressor
 
 # %%
@@ -152,30 +152,26 @@ fig.show()
 # forecaster.get_feature_importances().head(10)
 metric
 
+# %% [markdown]
+# ### Including exogenuous variable
+
 # %%
 features_to_extract = [
     'day_of_week',
     'hour'
 ]
+max_values = {
+    "day_of_week": 7,
+    "hour": 24,
+}
 calendar_transformer = DatetimeFeatures(
     variables           = 'index',
     features_to_extract = features_to_extract,
     drop_original       = True,
 )
 calendar_features = calendar_transformer.fit_transform(data_indexed)[features_to_extract]
-calendar_features
-
-# %%
-features_to_encode = [
-    "day_of_week",
-    "hour",
-]
-max_values = {
-    "day_of_week": 7,
-    "hour": 24,
-}
 cyclical_encoder = CyclicalFeatures(
-    variables     = features_to_encode,
+    variables     = features_to_extract,
     max_values    = max_values,
     drop_original = False
 )
@@ -184,9 +180,7 @@ exogenous_features = cyclical_encoder.fit_transform(calendar_features)
 exogenous_features.head(3)
 
 # %%
-exog_features = []
-# Columns that ends with _sin or _cos are selected
-exog_features.extend(exogenous_features.filter(regex='_sin$|_cos$').columns.tolist())
+exog_features = exogenous_features.filter(regex='_sin$|_cos$').columns.tolist()
 
 # %%
 data_exog = data_indexed[['purchase_bid']].merge(
@@ -226,9 +220,7 @@ fig.update_layout(
 )
 fig.show()
 
-# %%
-
-# %% [markdown]
+# %% [markdown] jp-MarkdownHeadingCollapsed=true
 # ### Tuning Forcaster Arguments via Bayesian Search
 
 # %%
@@ -310,8 +302,8 @@ fig.update_layout(
 )
 fig.show()
 
-# %% [markdown]
-# ## Feature Selection
+# %% [markdown] jp-MarkdownHeadingCollapsed=true
+# ### Feature Selection
 
 # %%
 # Create forecaster
@@ -350,26 +342,15 @@ lags_select, window_features_select, exog_select = select_features(
 )
 
 # %%
-lags_select, window_features_select, exog_select
-
-# %%
-# Create and train forecaster
-# ==============================================================================
 forecaster = ForecasterRecursive(
                  estimator       = LGBMRegressor(**best_params),
                  lags            = lags_select,
-                 window_features = window_features
+                 window_features = window_features_select
              )
 forecaster.fit(
     y               = data_exog['purchase_bid'],
     exog            = data_exog[exog_features],
 )
-
-# %%
-# Model-specific feature importances
-# ==============================================================================
-feature_importances = forecaster.get_feature_importances()
-feature_importances
 
 # %% [markdown]
 # ### Predict 7 days
@@ -459,7 +440,19 @@ fig.update_layout(
 
 fig.show()
 
-# %% [markdown]
+# %%
+df_predictions = predictions_future.to_frame(name='predictions')
+df_predictions = df_predictions.reset_index().rename(columns={'index': 'period_start'})
+start_str = df_predictions['period_start'].iloc[0].strftime('%m%d')
+end_str = df_predictions['period_start'].iloc[-1].strftime('%m%d')
+filename = f"boost_predictions_{start_str}_{end_str}.csv"
+
+df_predictions.to_csv(filename, index=False)
+print(f"File saved successfully as: {filename}")
+print(f"Total rows saved: {len(df_predictions)}")
+display(df_predictions.head())
+
+# %% [markdown] jp-MarkdownHeadingCollapsed=true
 # ### Forecaster Direct Model
 
 # %%
@@ -532,15 +525,8 @@ fig.update_layout(
 )
 fig.show()
 
-# %%
-
-# %%
-
-# %%
-
-# %%
-
-# %%
+# %% [markdown] jp-MarkdownHeadingCollapsed=true
+# ## Feature explanation with SHAP
 
 # %%
 # Training matrices used by the forecaster to fit the internal estimator

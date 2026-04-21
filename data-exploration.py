@@ -25,9 +25,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # %%
-data = pd.read_csv("../../Downloads/iex-dam-0201-0402.csv")
+data = pd.read_csv("../../Downloads/iex-dam-0201-0421.csv")
 
 # %%
+data["period_start"] = pd.to_datetime(data["period_start"])
 data
 
 # %%
@@ -40,7 +41,6 @@ data.describe()
 # ### Data Visualization - naive plots
 
 # %%
-data["period_start"] = pd.to_datetime(data["period_start"])
 
 columns = ["purchase_bid", "sell_bid", "mcv", "mcp"]
 titles  = ["Purchase Bid", "Sell Bid", "MCV", "MCP"]
@@ -98,30 +98,222 @@ fig.update_layout(
 
 fig.show("notebook")
 
-# %%
-## from the above plots, I am observing
-## purchase bids 
-### spike at around 7:30 am in the morning, and 6:30 pm in the evening
-### A slight downtrend moving from february to march.
-## sell bids
-### spike at around 01:00 pm, then lower at 06:30 pm, and rise again at around 2:30 am, and lower at 07:00 pm
-## MCV
-### follows almost the same trend as sell bids, but with some significant noise.
-## MCP
-### whenever sell bid is low, MCP is high.
-### capped at 10000
-
-## interesting things
+# %% [markdown]
+# from the above plots, I am observing
+# purchase bids 
+# spike at around 7:30 am in the morning, and 6:30 pm in the evening
+# A slight downtrend moving from february to march.
+# sell bids
+# spike at around 01:00 pm, then lower at 06:30 pm, and rise again at around 2:30 am, and lower at 07:00 pm
+# MCV
+# follows almost the same trend as sell bids, but with some significant noise.
+# MCP
+# whenever sell bid is low, MCP is high.
+# capped at 10000
+# interesting things
 # 1. There is a massive simultaneous supply shortage from march 11 to 15 and demand spike during the same period.
+#
+# findings
+# 1. MCV and Sell_bid are strongly correlated
+# 2. MCP and ratio(purchase/sell) are linearly related (when 10,000 cap is not breached)
+#
+# what's happening with the difference of energy between sell_bid and MCV
+#
+# ideally, the energy purchase bid today at a particular period should depend on a similar period yesterday or a few days before.
+# 04:00 should depend on 03:00 to 05:00 
 
-## findings
-## 1. MCV and Sell_bid are strongly correlated
-## 2. MCP and ratio(purchase/sell) are linearly related (when 10,000 cap is not breached)
+# %% [markdown]
+# ## Temporal Context
 
-## what's happening with the difference of energy between sell_bid and MCV
+# %%
 
-## ideally, the energy purchase bid today at a particular period should depend on a similar period yesterday or a few days before.
-## 04:00 should depend on 03:00 to 05:00 
+# %%
+import seaborn as sns
+import matplotlib.pyplot as plt
+import pandas as pd
+
+data_temporal = data.copy()
+
+# --- 1. Hourly Profiling (The Duck Curve) ---
+def plot_hourly_distribution(df):
+    plt.figure(figsize=(15, 6))
+    # Boxplot shows the median, quartiles, and outliers for each 15-min block
+    sns.boxplot(data=df, x='period_enum', y='purchase_bid', palette="viridis")
+    plt.title("Hourly Distribution of Purchase Bids (The Duck Curve)", fontsize=14)
+    plt.xlabel("Period Block (1-96)", fontsize=12)
+    plt.ylabel("Purchase Bid (MW)", fontsize=12)
+    plt.xticks(range(0, 97, 4), labels=range(0, 97, 4)) # Show hours on X-axis
+    plt.grid(axis='y', linestyle='--', alpha=0.6)
+    plt.show()
+
+# --- 2. Weekly Seasonality (Weekday vs Weekend) ---
+def plot_weekly_impact(df):
+    # Categorize into Weekday (1-5) and Weekend (6-7)
+    df['day_type'] = df['weekday_enum'].apply(lambda x: 'Weekend' if x >= 6 else 'Weekday')
+    
+    plt.figure(figsize=(10, 5))
+    sns.violinplot(data=df, x='day_type', y='purchase_bid', split=True, inner="quart", palette="Pastel1")
+    plt.title("Purchase Bid Volume: Weekdays vs. Weekends", fontsize=14)
+    plt.show()
+
+# --- 3. Holiday Identification ---
+def add_holiday_flags(df):
+    # List of major Indian holidays for Feb - April 2026
+    # Note: These dates affect industrial load significantly
+    holidays_2026 = [
+        '2026-02-18', # Maha Shivaratri
+        '2026-03-03', # Holi
+        '2026-03-19', # Gudi Padwa / Ugadi
+        '2026-03-28', # Ram Navami
+        '2026-04-03', # Good Friday
+        '2026-04-10', # Ambedkar Jayanti
+    ]
+    
+    df['is_holiday'] = df['period_start'].dt.strftime('%Y-%m-%d').isin(holidays_2026).astype(int)
+    
+    # Check impact
+    holiday_stats = df.groupby('is_holiday')['purchase_bid'].mean()
+    print("Average Bid on Holidays vs Working Days:")
+    print(holiday_stats)
+    return df
+
+# Execution
+data_temporal["period_enum"] = data_temporal["period_start"].dt.hour * 4 + data_temporal["period_start"].dt.minute // 15 + 1
+data_temporal["weekday_enum"] = data_temporal["period_start"].dt.weekday + 1
+
+plot_hourly_distribution(data_temporal)
+plot_weekly_impact(data_temporal)
+data_temporal = add_holiday_flags(data_temporal)
+
+# %% [markdown]
+# From the above plot, I am seeing outliers present during evening hours from period 75 to 96 to 4, as a result i need to have is_evening parameter here.
+
+# %% [markdown]
+# ## Environmental features
+
+# %%
+import requests
+import pandas as pd
+
+df_temp = data.copy()
+
+def get_nci_data(start_date, end_date):
+    # Defining cities and their weights for the NCI
+    # Mumbai (High Commercial), Delhi (High Residential/Peak), Akola (Heat Epicenter)
+    locations = {
+        "delhi": {"lat": 28.61, "lon": 77.20, "weight": 0.5},
+        "mumbai": {"lat": 19.07, "lon": 72.88, "weight": 0.3},
+        "akola": {"lat": 20.70, "lon": 77.01, "weight": 0.2}
+    }
+    
+    all_weather = pd.DataFrame()
+
+    for name, loc in locations.items():
+        url = "https://archive-api.open-meteo.com/v1/archive"
+        params = {
+            "latitude": loc["lat"],
+            "longitude": loc["lon"],
+            "start_date": start_date,
+            "end_date": end_date,
+            "daily": "temperature_2m_max",
+            "timezone": "Asia/Kolkata"
+        }
+        res = requests.get(url, params=params).json()
+        
+        temp_df = pd.DataFrame({
+            "date": pd.to_datetime(res["daily"]["time"]),
+            f"temp_{name}": res["daily"]["temperature_2m_max"]
+        })
+        
+        if all_weather.empty:
+            all_weather = temp_df
+        else:
+            all_weather = all_weather.merge(temp_df, on="date")
+
+    # Calculate the National Cooling Index (Weighted Average)
+    all_weather['NCI'] = 0
+    for name, loc in locations.items():
+        all_weather['NCI'] += all_weather[f'temp_{name}'] * loc['weight']
+    
+    return all_weather
+
+# 1. Fetch the multi-city data
+weather_master = get_nci_data("2026-02-01", "2026-04-21")
+
+# 2. Merge into your main dataframe
+df_temp['date_only'] = df_temp['period_start'].dt.date
+weather_master['date_only'] = weather_master['date'].dt.date
+
+df_temp = df_temp.merge(weather_master[['date_only', 'NCI']], on='date_only', how='left')
+
+# 3. Create a non-linear 'Cooling Demand' feature
+# This captures the 'spike' effect when NCI crosses 35 degrees
+df_temp['cooling_load_factor'] = (df_temp['NCI'] - 30).clip(lower=0)**2
+
+print("NCI and Cooling Load Factor added to data_clean.")
+
+# %%
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+# 1. Create figure with secondary y-axis
+fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+# 2. Add Purchase Bid (Primary Axis)
+fig.add_trace(
+    go.Scatter(
+        x=df_temp['period_start'], 
+        y=df_temp['purchase_bid'], 
+        name="Purchase Bid (MW)",
+        line=dict(color="#378ADD", width=1.5),
+        opacity=0.8
+    ),
+    secondary_y=False,
+)
+
+# 3. Add Max Temperature (Secondary Axis)
+# Note: This will appear as a 'staircase' because it is daily data
+fig.add_trace(
+    go.Scatter(
+        x=df_temp['period_start'], 
+        y=df_temp['cooling_load_factor'], 
+        name="Max Temp (°C)",
+        line=dict(color="#FF4B4B", width=3, dash='dot'),
+    ),
+    secondary_y=True,
+)
+
+# 4. Add layout details
+fig.update_layout(
+    title_text="<b>Impact of Heatwaves on IEX Purchase Bids (Feb - Apr 2026)</b>",
+    hovermode="x unified",
+    template="plotly_white",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+)
+
+# Set y-axes titles
+fig.update_yaxes(title_text="<b>Purchase Bid</b> (MW)", secondary_y=False)
+fig.update_yaxes(title_text="<b>cooling_load_factore</b> (°C)", secondary_y=True)
+
+fig.show()
+
+# %% [markdown]
+# The features are
+# 1. period_enum
+# 2. weekday_enum
+# 3. is_evening
+# 4. rolling 3 day cooling load factor
+# 5. previous day's uncleared volume
+
+# %%
+
+# %%
+
+# %%
+
+# %%
+
+# %%
 
 # %%
 columns = ["purchase_bid", "sell_bid", "mcv", "mcp"]
@@ -183,85 +375,50 @@ What i believe should be the variables over which the next day bids would depend
 6. period_enum
 
 # %%
-data["period_enum"] = data["period_start"].dt.hour * 4 + data["period_start"].dt.minute // 15 + 1
-data["weekday_enum"] = data["period_start"].dt.weekday + 1
 
 # %%
-# 1. Add +-1 and +-2 period values from the previous day
-# Since 1 period = 15 mins, lag 95 is "15 mins after same time yesterday" 
-# and lag 97 is "15 mins before same time yesterday"
-
 data["pb_lag1d"] = data["purchase_bid"].shift(96)
 data["sb_lag1d"] = data["sell_bid"].shift(96)
 
 data["pb_lag2d"] = data["purchase_bid"].shift(192)
 data["sb_lag2d"] = data["sell_bid"].shift(192)
 
-## The below are not of much help
-# # Neighbors (Looking at the "Shape" around the same time yesterday)
-# data["pb_lag1d_plus1"] = data["purchase_bid"].shift(96 - 1)  # 15 mins after
-# data["pb_lag1d_plus2"] = data["purchase_bid"].shift(96 - 2)  # 30 mins after
-# data["pb_lag1d_minus1"] = data["purchase_bid"].shift(96 + 1) # 15 mins before
-# data["pb_lag1d_minus2"] = data["purchase_bid"].shift(96 + 2) # 30 mins before
-
-# # Do the same for Sell Bids to give the model a view of supply-side "shape"
-# data["sb_lag1d_plus1"] = data["sell_bid"].shift(96 - 1)
-# data["sb_lag1d_plus2"] = data["sell_bid"].shift(96 - 2)
-# data["sb_lag1d_minus1"] = data["sell_bid"].shift(96 + 1)
-# data["sb_lag1d_minus2"] = data["sell_bid"].shift(96 + 2)
-
-# Drop the new NaNs created by the larger shifts
 data_clean = data.dropna()
 
 print(f"New feature count: {len(data_clean.columns)}")
 data_clean.head()
 
-# %% [markdown]
-# ### TSA decompose
+# %%
+# Filter for heatwave periods to see the 'true' driver
+heatwave_data = df_temp[df_temp['NCI'] > 34]
+
+# Check correlation of individual cities against purchase_bid
+city_cols = [col for col in df_temp.columns if 'temp_' in col]
+correlations = heatwave_data[city_cols + ['purchase_bid']].corr()['purchase_bid'].sort_values(ascending=False)
+
+print("Correlation with Purchase Bids during Heatwaves:")
+print(correlations)
 
 # %%
-from statsmodels.tsa.seasonal import seasonal_decompose
-
-# 1. Ensure your index has a frequency (required for seasonal_decompose)
-indexed_data = data.set_index('period_start')
-indexed_data = indexed_data.asfreq('15min')
-
-# 2. Perform Classical Decomposition
-result = seasonal_decompose(indexed_data['purchase_bid'], model='additive', period=96)
-
-# 3. Save the residuals
-indexed_data['pb_resid'] = result.resid
-
-# 4. Plot using matplotlib
-plt.rcParams['figure.figsize'] = (12, 8)
-result.plot()
-plt.show()
-
-# %% [markdown]
-# ## 
+# Check if yesterday's temperature in a city predicts today's bids better
+for city in city_cols:
+    corr_today = df_temp['purchase_bid'].corr(df_temp[city])
+    corr_lagged = df_temp['purchase_bid'].corr(df_temp[city].shift(96)) # 96 blocks = 1 day
+    print(f"{city} -> Today: {corr_today:.2f}, Lagged (Yesterday): {corr_lagged:.2f}")
 
 # %%
-import matplotlib.pyplot as plt
+import plotly.express as px
 
-fig, axes = plt.subplots(2, 2, figsize=(14, 8))
-fig.suptitle("ACF & PACF — Purchase Bid and Sell Bid", fontsize=14, fontweight="bold")
+# Prepare data for a heatmap
+temp_only = df_temp[city_cols + ['date_only']].drop_duplicates().set_index('date_only')
 
-plot_acf(data["purchase_bid"].diff(96).diff().dropna(),  lags=400, ax=axes[0, 0], title="ACF — Purchase Bid")
-plot_pacf(data["purchase_bid"].diff(96).diff().dropna(), lags=400, ax=axes[0, 1], title="PACF — Purchase Bid")
-plot_acf(data["sell_bid"].diff(96).diff().dropna(),      lags=400, ax=axes[1, 0], title="ACF — Sell Bid")
-plot_pacf(data["sell_bid"].diff(96).diff().dropna(),     lags=400, ax=axes[1, 1], title="PACF — Sell Bid")
+fig = px.imshow(temp_only.T, 
+                labels=dict(x="Date", y="City", color="Temp (°C)"),
+                title="Regional Temperature Heatmap vs. IEX Spikes",
+                color_continuous_scale="Reds")
+fig.show()
 
-# plot_acf(data["purchase_bid"].dropna(),  lags=200, ax=axes[0, 0], title="ACF — Purchase Bid")
-# plot_pacf(data["purchase_bid"].dropna(), lags=200, ax=axes[0, 1], title="PACF — Purchase Bid")
-# plot_acf(data["sell_bid"].dropna(),      lags=200, ax=axes[1, 0], title="ACF — Sell Bid")
-# plot_pacf(data["sell_bid"].dropna(),     lags=200, ax=axes[1, 1], title="PACF — Sell Bid")
-
-for ax in axes.flat:
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.grid(True, linestyle="--", alpha=0.3)
-
-plt.tight_layout()
-plt.show()
+# %%
 
 # %%
 
@@ -272,45 +429,8 @@ plt.show()
 # %%
 
 # %% [markdown] jp-MarkdownHeadingCollapsed=true
-# ### Checking if we can fit individual time series for each period. Seems like ARIMA(1,1,1) can work.
-
-# %%
-period_enum = 64
-
-fig = go.Figure()
-
-fig.add_trace(go.Scatter(
-    x=data[data["period_enum"] == period_enum]["period_start"],
-    y=data[data["period_enum"] == period_enum]["purchase_bid"],
-    mode="lines+markers",
-    line=dict(color="#378ADD", width=2),
-    marker=dict(size=4),
-    hovertemplate="<b>%{x|%H:%M}</b><br>Purchase Bid: %{y:,.1f} MW<extra></extra>",
-))
-
-fig.add_trace(go.Scatter(
-    x=data[data["period_enum"] == period_enum]["period_start"],
-    y=data[data["period_enum"] == period_enum]["sell_bid"],
-    mode="lines+markers",
-    line=dict(color="#378ADD", width=2),
-    marker=dict(size=4),
-    hovertemplate="<b>%{x|%H:%M}</b><br>Sell Bid: %{y:,.1f} MW<extra></extra>",
-))
-
-fig.update_layout(
-    title="Purchase Bid over Time",
-    xaxis_title="Time",
-    yaxis_title="MW",
-    hovermode="x unified",
-    plot_bgcolor="white",
-    yaxis=dict(gridcolor="rgba(150,150,150,0.2)"),
-)
-
-fig.show("notebook")
-plot_acf(data[data["period_enum"] == period_enum]["purchase_bid"], lags=15)
-
-# %% [markdown] jp-MarkdownHeadingCollapsed=true
-# ### Seeing if uncleared volume can work as a predictor. It can act as a predictor but its correlated with purchase bids.
+# ### Checking uncleared volume as a predictor.
+# It can act as a predictor but its correlated with purchase bids.
 
 # %%
 data["ucv"] = data["purchase_bid"] - data["mcv"]
@@ -365,18 +485,6 @@ def perform_adf_test(series):
 
 # Run it on your purchase bids
 perform_adf_test(data['purchase_bid'])
-
-# %%
-
-# %%
-
-# %%
-
-# %%
-
-# %% jupyter={"outputs_hidden": true}
-
-# %%
 
 # %%
 # x = data["diff_bid_norm"].dropna()

@@ -19,8 +19,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats
 
-from statsmodels.tsa.seasonal import STL
-
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -28,27 +26,184 @@ from utilsforecast.plotting import plot_series
 from utilsforecast.evaluation import evaluate
 from utilsforecast.losses import *
 
+from feature_engine.datetime import DatetimeFeatures
+from feature_engine.creation import CyclicalFeatures
+
+from sklearn.preprocessing import MinMaxScaler
+
+from skforecast.deep_learning import create_and_compile_model, ForecasterRnn
+from keras.layers import Dropout
+from keras.callbacks import EarlyStopping
+
+from skforecast.model_selection import TimeSeriesFold, bayesian_search_forecaster, backtesting_forecaster, backtesting_forecaster_multiseries
+
 # %%
-data = pd.read_csv("../../Downloads/iex_dam_feb_mar_2026.csv")
+import os
+os.environ["KERAS_BACKEND"]
+
+# %%
+data = pd.read_csv("../../Downloads/iex-dam-0201-0413.csv")
 
 # %%
 # conforming type
 data["period_start"] = pd.to_datetime(data["period_start"])
-data["period_enum"] = data["period_start"].dt.hour * 4 + data["period_start"].dt.minute // 15 + 1
-data["weekday_enum"] = data["period_start"].dt.weekday + 1
+data_indexed = data.set_index('period_start')
+data_indexed = data_indexed.asfreq('15min')
+data_indexed
 
 # %%
-data["pb_lag1d"] = data["purchase_bid"].shift(96)
-data["sb_lag1d"] = data["sell_bid"].shift(96)
-data["pb_lag2d"] = data["purchase_bid"].shift(192)
-data["sb_lag2d"] = data["sell_bid"].shift(192)
+# Split train-validation-test
+# ==============================================================================
+end_train = "2026-03-28 23:46:00"
+end_validation = "2026-04-05 23:46:00"
+data_train = data_indexed.loc[:end_train, :].copy()
+data_val = data_indexed.loc[end_train:end_validation, :].copy()
+data_test = data_indexed.loc[end_validation:, :].copy()
 
-data['target_diff'] = data['purchase_bid']
+print(
+    f"Dates train     : {data_train.index.min()} --- " 
+    f"{data_train.index.max()}  (n={len(data_train)})"
+)
+print(
+    f"Dates validation: {data_val.index.min()} --- " 
+    f"{data_val.index.max()}  (n={len(data_val)})"
+)
+print(
+    f"Dates test: {data_test.index.min()} --- " 
+    f"{data_test.index.max()}  (n={len(data_test)})"
+)
 
-data_clean = data.dropna()
+# %%
+features_to_extract = [
+    'day_of_week',
+    'hour'
+]
+max_values = {
+    "day_of_week": 7,
+    "hour": 24,
+}
+calendar_transformer = DatetimeFeatures(
+    variables           = 'index',
+    features_to_extract = features_to_extract,
+    drop_original       = True,
+)
+calendar_features = calendar_transformer.fit_transform(data_indexed)[features_to_extract]
+cyclical_encoder = CyclicalFeatures(
+    variables     = features_to_extract,
+    max_values    = max_values,
+    drop_original = False
+)
 
-print(f"New feature count: {len(data_clean.columns)}")
-data_clean.head()
+exogenous_features = cyclical_encoder.fit_transform(calendar_features)
+exogenous_features.head(3)
+
+# %%
+# Create model
+# ==============================================================================
+lags = 96
+
+# 1. Define a smaller, more robust architecture
+model = create_and_compile_model(
+    series          = data[['purchase_bid']],
+    lags            = 96, 
+    steps           = 672,
+    recurrent_layer = "LSTM",
+    recurrent_units = [64, 32], # Smaller units for smaller data
+    dense_units     = [32],
+    # Adding Dropout via kwargs to prevent overfitting
+    recurrent_layers_kwargs = {'dropout': 0.2}, 
+    compile_kwargs  = {'optimizer': 'adam', 'loss': 'mae'}, # MAE is more robust to outliers
+    model_name              = "Single-Series-Multi-Step" 
+)
+
+model.summary()
+
+
+# %%
+
+# %%
+
+forecaster = ForecasterRnn(
+    estimator          = model,
+    levels             = 'purchase_bid',
+    lags               = 96,
+    transformer_series = MinMaxScaler(),
+    fit_kwargs = {
+        "epochs": 50,
+        "batch_size": 32, # Smaller batch size for smaller datasets
+        "callbacks": [EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True)],
+        "series_val": data_val # Your 7-day validation window
+    }
+)
+
+# 3. Fit using your Cyclical Exogenous features
+forecaster.fit(
+    series = data_train[['purchase_bid']],
+    #exog   = exogenous_features[['hour_sin', 'hour_cos', 'day_of_week_sin', 'day_of_week_cos']]
+)
+
+# %%
+# Prediction
+# ==============================================================================
+predictions = forecaster.predict(steps=96)  # Same as steps=None
+predictions.head(4)
+
+# %%
+forecaster.max_step
+
+# %%
+# Backtesting 
+# ==============================================================================
+cv = TimeSeriesFold(
+         steps              = forecaster.max_step,
+         initial_train_size = len(data_indexed.loc[:end_validation, :]),  # Training + Validation Data
+         refit              = False
+     )
+
+# The validation partition is now used as part of the initial fit
+# Epocs is set to the value idenfied in the previous training with early stopping
+forecaster.set_fit_kwargs({"epochs": 10,"batch_size": 512})
+
+metrics, predictions = backtesting_forecaster_multiseries(
+    forecaster        = forecaster,
+    series            = data_indexed[['purchase_bid']],
+    cv                = cv,
+    levels            = forecaster.levels,
+    metric            = "mean_absolute_error",
+    verbose           = False,
+    suppress_warnings = True
+)
+
+# %%
+predictions
+
+# %%
+# Plotting predictions vs real values in the test set
+# ==============================================================================
+fig = go.Figure()
+trace1 = go.Scatter(x=data_test.index, y=data_test['purchase_bid'], name="test", mode="lines")
+trace2 = go.Scatter(
+    x=predictions.index,
+    y=predictions.loc[predictions["level"] == "purchase_bid", "pred"],
+    name="predictions", mode="lines"
+)
+fig.add_trace(trace1)
+fig.add_trace(trace2)
+fig.update_layout(
+    title="Prediction vs real values in the test set",
+    xaxis_title="Date time",
+    yaxis_title="O3",
+    width=800,
+    height=400,
+    margin=dict(l=20, r=20, t=35, b=20),
+    legend=dict(orientation="h", yanchor="top", y=1.05, xanchor="left", x=0)
+)
+fig.show()
+
+
+# %%
+
+# %%
 
 # %%
 

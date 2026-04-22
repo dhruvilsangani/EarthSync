@@ -1,0 +1,19 @@
+{
+  "rows_after_cleanup": 7680,
+  "duplicates_removed": 0,
+  "gap_count": 0,
+  "gap_examples": [],
+  "start_timestamp": "2026-02-01 00:00:00",
+  "end_timestamp": "2026-04-21 23:45:00",
+  "weather_cache_source": "api_fetch",
+  "weather_start_date": "2026-02-01 00:00:00",
+  "weather_end_date": "2026-04-21 00:00:00",
+  "missing_weather_rows_after_merge": 0,
+  "rows_before_dropna": 7680,
+  "rows_after_dropna": 7008,
+  "null_summary_by_column": {},
+  "output_rows": 7008,
+  "output_columns": 56,
+  "null_cells_after_build": 0,
+  "constant_columns": []
+}

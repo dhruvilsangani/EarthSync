@@ -1,0 +1,72 @@
+data:
+  raw_input_csv: "iex-dam-0201-0421.csv"
+  input_csv: "data/processed/iex_dam_modeling.csv"
+  timestamp_col: "period_start"
+  frequency: "15min"
+
+forecast:
+  holdout_start: "2026-04-15 00:00:00"
+  holdout_end: "2026-04-21 23:45:00"
+  horizon_steps: 672
+
+features:
+  time:
+    enabled: true
+    is_evening_blocks: [73, 88]
+  market:
+    enabled: true
+    include_prev_day_features: true
+  weather:
+    enabled: true
+    api_with_cache: true
+    cache_csv: "data/external/weather_nci.csv"
+    refresh_cache: false
+    locations:
+      delhi: { lat: 28.61, lon: 77.20, weight: 0.5 }
+      mumbai: { lat: 19.07, lon: 72.88, weight: 0.3 }
+      akola: { lat: 20.70, lon: 77.01, weight: 0.2 }
+  shared:
+    - "period_enum"
+    - "weekday_enum"
+    - "is_weekend"
+    - "period_sin"
+    - "period_cos"
+    - "weekday_sin"
+    - "weekday_cos"
+    - "is_evening"
+    - "purchase_minus_sell"
+    - "purchase_to_sell_ratio"
+    - "uncleared_volume"
+    - "cleared_ratio"
+    - "prev_day_purchase_bid"
+    - "prev_day_uncleared_vol"
+    - "NCI"
+    - "cooling_load_factor"
+    - "rolling_3d_clf"
+  lags:
+    - 1
+    - 4
+    - 96
+    - 192
+    - 288
+    - 672
+  rolling_windows:
+    - 96
+    - 288
+  dropna_after_feature_build: true
+targets:
+  - "purchase_bid"
+  - "sell_bid"
+
+modeling:
+  candidates:
+    - "seasonal_naive"
+    - "hist_gbrt"
+    - "lightgbm"
+    - "xgboost"
+    - "lstm"
+  random_state: 42
+
+paths:
+  artifacts_dir: "artifacts"
+  outputs_dir: "outputs"

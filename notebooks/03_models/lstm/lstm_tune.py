@@ -14,6 +14,24 @@
 # ---
 
 # %%
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path.cwd()
+if str(PROJECT_ROOT / "src") not in sys.path:
+    sys.path.append(str(PROJECT_ROOT / "src"))
+
+TARGET_COL = "purchase_bid"  # change to "sell_bid" for sell-side experiments
+LAG_SUFFIX = "pb" if TARGET_COL == "purchase_bid" else "sb"
+HORIZON = 96 * 7
+PARAMS_PATH = Path("data/processed/params/lstm_params.json")
+
+from forecasting.data.loaders import load_market_data
+from forecasting.features.calendar import build_time_features
+from forecasting.models.lstm_models import build_default_lstm
+from forecasting.utils.io import save_json, load_json
+
+# %%
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -26,12 +44,9 @@ from utilsforecast.plotting import plot_series
 from utilsforecast.evaluation import evaluate
 from utilsforecast.losses import *
 
-from feature_engine.datetime import DatetimeFeatures
-from feature_engine.creation import CyclicalFeatures
-
 from sklearn.preprocessing import MinMaxScaler
 
-from skforecast.deep_learning import create_and_compile_model, ForecasterRnn
+from skforecast.deep_learning import ForecasterRnn
 from keras.layers import Dropout
 from keras.callbacks import EarlyStopping
 
@@ -42,14 +57,20 @@ import os
 os.environ["KERAS_BACKEND"]
 
 # %%
-data = pd.read_csv("../../Downloads/iex-dam-0201-0413.csv")
+data_indexed = load_market_data("data/raw/iex-dam-0201-0421.csv")
+data = data_indexed.reset_index()
+data_indexed
 
 # %%
-# conforming type
-data["period_start"] = pd.to_datetime(data["period_start"])
-data_indexed = data.set_index('period_start')
-data_indexed = data_indexed.asfreq('15min')
-data_indexed
+data_clean = data.copy()
+data_clean["period_enum"] = (
+    data_clean["period_start"].dt.hour * 4 + data_clean["period_start"].dt.minute // 15 + 1
+)
+data_clean["weekday_enum"] = data_clean["period_start"].dt.weekday + 1
+data_clean[f"{LAG_SUFFIX}_lag1d"] = data_clean[TARGET_COL].shift(96 * 1)
+data_clean[f"{LAG_SUFFIX}_lag2d"] = data_clean[TARGET_COL].shift(96 * 2)
+data_clean[f"{LAG_SUFFIX}_lag7d"] = data_clean[TARGET_COL].shift(96 * 7)
+data_clean = data_clean.dropna().reset_index(drop=True)
 
 # %%
 # Split train-validation-test
@@ -74,27 +95,7 @@ print(
 )
 
 # %%
-features_to_extract = [
-    'day_of_week',
-    'hour'
-]
-max_values = {
-    "day_of_week": 7,
-    "hour": 24,
-}
-calendar_transformer = DatetimeFeatures(
-    variables           = 'index',
-    features_to_extract = features_to_extract,
-    drop_original       = True,
-)
-calendar_features = calendar_transformer.fit_transform(data_indexed)[features_to_extract]
-cyclical_encoder = CyclicalFeatures(
-    variables     = features_to_extract,
-    max_values    = max_values,
-    drop_original = False
-)
-
-exogenous_features = cyclical_encoder.fit_transform(calendar_features)
+exogenous_features = build_time_features(data_indexed.index)
 exogenous_features.head(3)
 
 # %%
@@ -102,19 +103,7 @@ exogenous_features.head(3)
 # ==============================================================================
 lags = 96
 
-# 1. Define a smaller, more robust architecture
-model = create_and_compile_model(
-    series          = data[['purchase_bid']],
-    lags            = 96, 
-    steps           = 672,
-    recurrent_layer = "LSTM",
-    recurrent_units = [64, 32], # Smaller units for smaller data
-    dense_units     = [32],
-    # Adding Dropout via kwargs to prevent overfitting
-    recurrent_layers_kwargs = {'dropout': 0.2}, 
-    compile_kwargs  = {'optimizer': 'adam', 'loss': 'mae'}, # MAE is more robust to outliers
-    model_name              = "Single-Series-Multi-Step" 
-)
+model = build_default_lstm(series=data[[TARGET_COL]], lags=lags, steps=HORIZON)
 
 model.summary()
 
@@ -125,7 +114,7 @@ model.summary()
 
 forecaster = ForecasterRnn(
     estimator          = model,
-    levels             = 'purchase_bid',
+    levels             = TARGET_COL,
     lags               = 96,
     transformer_series = MinMaxScaler(),
     fit_kwargs = {
@@ -138,7 +127,7 @@ forecaster = ForecasterRnn(
 
 # 3. Fit using your Cyclical Exogenous features
 forecaster.fit(
-    series = data_train[['purchase_bid']],
+    series = data_train[[TARGET_COL]],
     #exog   = exogenous_features[['hour_sin', 'hour_cos', 'day_of_week_sin', 'day_of_week_cos']]
 )
 
@@ -166,7 +155,7 @@ forecaster.set_fit_kwargs({"epochs": 10,"batch_size": 512})
 
 metrics, predictions = backtesting_forecaster_multiseries(
     forecaster        = forecaster,
-    series            = data_indexed[['purchase_bid']],
+    series            = data_indexed[[TARGET_COL]],
     cv                = cv,
     levels            = forecaster.levels,
     metric            = "mean_absolute_error",
@@ -181,10 +170,10 @@ predictions
 # Plotting predictions vs real values in the test set
 # ==============================================================================
 fig = go.Figure()
-trace1 = go.Scatter(x=data_test.index, y=data_test['purchase_bid'], name="test", mode="lines")
+trace1 = go.Scatter(x=data_test.index, y=data_test[TARGET_COL], name="test", mode="lines")
 trace2 = go.Scatter(
     x=predictions.index,
-    y=predictions.loc[predictions["level"] == "purchase_bid", "pred"],
+    y=predictions.loc[predictions["level"] == TARGET_COL, "pred"],
     name="predictions", mode="lines"
 )
 fig.add_trace(trace1)
@@ -218,11 +207,10 @@ from sklearn.metrics import mean_absolute_error
 
 # 1. Define your specific features
 features = [
-    'period_enum', 'weekday_enum', 
-    'pb_lag1d', 'pb_lag2d', #'pb_lag1d_plus1', 'pb_lag1d_plus2', 'pb_lag1d_minus1', 'pb_lag1d_minus2',
-    # 'sb_lag1d', 'sb_lag2d' #'sb_lag1d_plus1', 'sb_lag1d_plus2', 'sb_lag1d_minus1', 'sb_lag1d_minus2'
+    'period_enum', 'weekday_enum',
+    f'{LAG_SUFFIX}_lag1d', f'{LAG_SUFFIX}_lag2d',
 ]
-target = 'purchase_bid'
+target = TARGET_COL
 
 # 2. Scaling (CRITICAL for LSTMs)
 scaler_x = MinMaxScaler()
@@ -342,7 +330,7 @@ test_days = 7
 data_clean['date'] = data_clean['period_start'].dt.date
 
 # Pivot: Rows = Dates, Columns = The 96 periods
-df_daily = data_clean.pivot(index='date', columns='period_enum', values='purchase_bid')
+df_daily = data_clean.pivot(index='date', columns='period_enum', values=target)
 df_daily = df_daily.dropna() # Ensure we only have full 96-period days
 
 # Scale the entire 96-column matrix
@@ -492,7 +480,7 @@ import pandas as pd
 history_size = 96 * 7 
 
 # 2. Extract historical data for the plot
-history_y = data_clean['purchase_bid'].tail(history_size)
+history_y = data_clean[target].tail(history_size)
 history_x = data_clean['period_start'].tail(history_size)
 
 # 3. Create the forecast timeline starting from the last date in data_clean
@@ -523,20 +511,23 @@ plt.tight_layout()
 plt.show()
 
 # %%
-# 1. Create the 7-day lag (essential for weekly patterns)
-data_clean['pb_lag7d'] = data['purchase_bid'].shift(96 * 7)
-data_clean = data_clean.dropna()
-
-# 2. Pivot all features into daily vectors
+# 1. Pivot all features into daily vectors (lags were precomputed above)
 # We create a dictionary of "daily matrices"
-feature_cols = ['purchase_bid', 'pb_lag1d', 'pb_lag2d', 'pb_lag7d', 'period_enum', 'weekday_enum']
+feature_cols = [
+    target,
+    f'{LAG_SUFFIX}_lag1d',
+    f'{LAG_SUFFIX}_lag2d',
+    f'{LAG_SUFFIX}_lag7d',
+    'period_enum',
+    'weekday_enum',
+]
 daily_matrices = {}
 
 for col in feature_cols:
     daily_matrices[col] = data_clean.pivot(index='date', columns='period_enum', values=col).dropna()
 
 # Ensure all matrices have the same dates (intersection)
-common_dates = daily_matrices['purchase_bid'].index
+common_dates = daily_matrices[target].index
 for col in feature_cols:
     daily_matrices[col] = daily_matrices[col].loc[common_dates]
 
@@ -551,24 +542,24 @@ scaled_matrices = {col: scalers[col].fit_transform(daily_matrices[col]) for col 
 
 def create_3d_dataset(matrices, test_days=7):
     X, y = [], []
-    # dates = list(matrices['purchase_bid'].index)
+    # dates = list(matrices[target].index)
 
-    num_days = matrices['purchase_bid'].shape[0]
-    # We use matrices['pb_lag1d'], etc., as inputs for day D to predict matrices['purchase_bid'] for day D
+    num_days = matrices[target].shape[0]
+    # We use matrices['pb_lag1d'], etc., as inputs for day D to predict matrices[target] for day D
     # Actually, to predict Tomorrow (D+1), we use Today's (D) features.
     
     for i in range(num_days - 1):
         # Create a 96x5 slice for the day
         day_features = np.stack([
-            scaled_matrices['pb_lag1d'][i],
-            scaled_matrices['pb_lag2d'][i],
-            scaled_matrices['pb_lag7d'][i],
+            scaled_matrices[f'{LAG_SUFFIX}_lag1d'][i],
+            scaled_matrices[f'{LAG_SUFFIX}_lag2d'][i],
+            scaled_matrices[f'{LAG_SUFFIX}_lag7d'][i],
             scaled_matrices['period_enum'][i],
             scaled_matrices['weekday_enum'][i]
         ], axis=-1) # Shape: (96, 5)
         
         X.append(day_features)
-        y.append(scaled_matrices['purchase_bid'][i+1]) # Target: Tomorrow's actual bids
+        y.append(scaled_matrices[target][i+1]) # Target: Tomorrow's actual bids
         
     return np.array(X), np.array(y)
 
@@ -618,7 +609,7 @@ for d in range(7):
         current_X = new_day
 
 # Inverse scale the results
-final_forecast = scalers['purchase_bid'].inverse_transform(np.array(all_forecasts)).flatten()
+final_forecast = scalers[target].inverse_transform(np.array(all_forecasts)).flatten()
 
 # %%
 final_forecast
@@ -641,7 +632,7 @@ test_timestamps = data_clean['period_start'].iloc[-(test_days * steps_per_day):]
 history_end_idx = len(data_clean) - (test_days * steps_per_day)
 history_start_idx = history_end_idx - (days_of_history_to_show * steps_per_day)
 history_timestamps = data_clean['period_start'].iloc[history_start_idx:history_end_idx]
-history_values = data_clean['purchase_bid'].iloc[history_start_idx:history_end_idx]
+history_values = data_clean[target].iloc[history_start_idx:history_end_idx]
 
 # 3. Plotting
 plt.figure(figsize=(18, 8))
@@ -687,7 +678,13 @@ import seaborn as sns
 from sklearn.metrics import mean_absolute_error
 
 # 1. Define feature names (order must match your X_train/X_test stacking)
-feature_names = ['pb_lag1d', 'pb_lag2d', 'pb_lag7d', 'period_enum', 'weekday_enum']
+feature_names = [
+    f'{LAG_SUFFIX}_lag1d',
+    f'{LAG_SUFFIX}_lag2d',
+    f'{LAG_SUFFIX}_lag7d',
+    'period_enum',
+    'weekday_enum',
+]
 
 # 2. Calculate Baseline MAE (the error of your current model)
 # Using your existing test set and predictions
@@ -733,3 +730,50 @@ plt.show()
 print(importance_df)
 
 # %%
+
+
+# %% [markdown]
+# ### Persist LSTM training settings for submission forecasts
+# Stores the Skforecast RNN configuration and last backtest MAE for the active `TARGET_COL`.
+
+# %%
+_end_val = data_indexed.index[-HORIZON - 1]
+_fit_kw = {
+    "epochs": 30,
+    "batch_size": 32,
+    "callbacks": [EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True)],
+}
+_model = build_default_lstm(series=data_indexed[[TARGET_COL]], lags=96, steps=HORIZON)
+_forecaster = ForecasterRnn(
+    estimator=_model,
+    levels=TARGET_COL,
+    lags=96,
+    transformer_series=MinMaxScaler(),
+    fit_kwargs=_fit_kw,
+)
+_cv = TimeSeriesFold(
+    steps=HORIZON,
+    initial_train_size=len(data_indexed.loc[:_end_val, :]),
+    refit=False,
+)
+_metrics, _ = backtesting_forecaster_multiseries(
+    forecaster=_forecaster,
+    series=data_indexed[[TARGET_COL]],
+    cv=_cv,
+    levels=[TARGET_COL],
+    metric="mean_absolute_error",
+    verbose=False,
+    suppress_warnings=True,
+)
+_payload = {
+    "target": TARGET_COL,
+    "model": "lstm_rnn",
+    "horizon": HORIZON,
+    "lags": 96,
+    "fit_kwargs": {"epochs": 30, "batch_size": 32, "patience": 5},
+    "backtest_mae": float(_metrics.iloc[0, 0]),
+}
+_existing_l = load_json(PARAMS_PATH) if PARAMS_PATH.exists() else {}
+_existing_l[TARGET_COL] = _payload
+save_json(_existing_l, PARAMS_PATH)
+_payload

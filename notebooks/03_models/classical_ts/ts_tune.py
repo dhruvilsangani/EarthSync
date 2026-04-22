@@ -14,12 +14,28 @@
 # ---
 
 # %%
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path.cwd()
+if str(PROJECT_ROOT / "src") not in sys.path:
+    sys.path.append(str(PROJECT_ROOT / "src"))
+
+TARGET_COL = "purchase_bid"  # change to "sell_bid" for sell-side experiments
+HORIZON = 96 * 7
+PARAMS_PATH = Path("data/processed/params/ts_params.json")
+
+from forecasting.data.loaders import load_market_data
+from forecasting.utils.io import save_json, load_json
+
+# %%
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats
 
 from statsmodels.tsa.seasonal import STL
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -48,7 +64,8 @@ def test_stationarity(timeseries):
 
 
 # %%
-data = pd.read_csv("../../Downloads/iex_dam_feb_mar_2026.csv")
+data_indexed = load_market_data("data/raw/iex-dam-0201-0421.csv")
+data = data_indexed.reset_index()
 
 # %%
 from statsmodels.tsa.seasonal import seasonal_decompose
@@ -58,10 +75,10 @@ indexed_data = data.set_index('period_start')
 indexed_data = indexed_data.asfreq('15min')
 
 # 2. Perform Classical Decomposition
-result = seasonal_decompose(indexed_data['purchase_bid'], model='additive', period=96)
+result = seasonal_decompose(indexed_data[TARGET_COL], model='additive', period=96)
 
 # 3. Save the residuals
-indexed_data['pb_resid'] = result.resid
+indexed_data[f"{TARGET_COL}_resid"] = result.resid
 
 # 4. Plot using matplotlib
 plt.rcParams['figure.figsize'] = (12, 8)
@@ -72,22 +89,22 @@ plt.show()
 import matplotlib.pyplot as plt
 
 fig, axes = plt.subplots(4, 2, figsize=(14, 8))
-fig.suptitle("ACF & PACF — Purchase Bid and Sell Bid", fontsize=14, fontweight="bold")
+fig.suptitle(f"ACF & PACF — {TARGET_COL}", fontsize=14, fontweight="bold")
 
-plot_acf(data["purchase_bid"].dropna(),  lags=400, ax=axes[0, 0], title="ACF — Purchase Bid")
-plot_pacf(data["purchase_bid"].dropna(), lags=400, ax=axes[0, 1], title="PACF — Purchase Bid")
-plot_acf(data["purchase_bid"].diff(96).dropna(),  lags=400, ax=axes[1, 0], title="ACF — Purchase Bid - D=1")
-plot_pacf(data["purchase_bid"].diff(96).dropna(), lags=400, ax=axes[1, 1], title="PACF — Purchase Bid - D=1")
-plot_acf(data["purchase_bid"].diff(96).diff().dropna(),  lags=400, ax=axes[2, 0], title="ACF — Purchase Bid - D=1,d=1")
-plot_pacf(data["purchase_bid"].diff(96).diff().dropna(), lags=400, ax=axes[2, 1], title="PACF — Purchase Bid - D=1,d=1")
-plot_acf(data["purchase_bid"].diff(96).diff().dropna(),  lags=40, ax=axes[3, 0], title="ACF — Purchase Bid - Zoom")
-plot_pacf(data["purchase_bid"].diff(96).diff().dropna(), lags=40, ax=axes[3, 1], title="PACF — Purchase Bid - Zoom")
+plot_acf(data[TARGET_COL].dropna(),  lags=400, ax=axes[0, 0], title=f"ACF — {TARGET_COL}")
+plot_pacf(data[TARGET_COL].dropna(), lags=400, ax=axes[0, 1], title=f"PACF — {TARGET_COL}")
+plot_acf(data[TARGET_COL].diff(96).dropna(),  lags=400, ax=axes[1, 0], title=f"ACF — {TARGET_COL} - D=1")
+plot_pacf(data[TARGET_COL].diff(96).dropna(), lags=400, ax=axes[1, 1], title=f"PACF — {TARGET_COL} - D=1")
+plot_acf(data[TARGET_COL].diff(96).diff().dropna(),  lags=400, ax=axes[2, 0], title=f"ACF — {TARGET_COL} - D=1,d=1")
+plot_pacf(data[TARGET_COL].diff(96).diff().dropna(), lags=400, ax=axes[2, 1], title=f"PACF — {TARGET_COL} - D=1,d=1")
+plot_acf(data[TARGET_COL].diff(96).diff().dropna(),  lags=40, ax=axes[3, 0], title=f"ACF — {TARGET_COL} - Zoom")
+plot_pacf(data[TARGET_COL].diff(96).diff().dropna(), lags=40, ax=axes[3, 1], title=f"PACF — {TARGET_COL} - Zoom")
 
 # plot_acf(data["sell_bid"].diff(96).diff().dropna(),      lags=400, ax=axes[1, 0], title="ACF — Sell Bid")
 # plot_pacf(data["sell_bid"].diff(96).diff().dropna(),     lags=400, ax=axes[1, 1], title="PACF — Sell Bid")
 
-# plot_acf(data["purchase_bid"].dropna(),  lags=200, ax=axes[0, 0], title="ACF — Purchase Bid")
-# plot_pacf(data["purchase_bid"].dropna(), lags=200, ax=axes[0, 1], title="PACF — Purchase Bid")
+# plot_acf(data[TARGET_COL].dropna(),  lags=200, ax=axes[0, 0], title=f"ACF — {TARGET_COL}")
+# plot_pacf(data[TARGET_COL].dropna(), lags=200, ax=axes[0, 1], title=f"PACF — {TARGET_COL}")
 # plot_acf(data["sell_bid"].dropna(),      lags=200, ax=axes[1, 0], title="ACF — Sell Bid")
 # plot_pacf(data["sell_bid"].dropna(),     lags=200, ax=axes[1, 1], title="PACF — Sell Bid")
 
@@ -115,8 +132,8 @@ plt.show()
 
 # %%
 data = data.rename(columns={
-    'period_start': 'ds',  # Your timestamp
-    'purchase_bid': 'y'             # The target value you want to plot (Market Clearing Price)
+    'period_start': 'ds',
+    TARGET_COL: 'y',
 })
 filtered_data = data[[ "ds", "y" ]]
 filtered_data['unique_id'] = 'series_1'
@@ -223,7 +240,7 @@ plot_series(
 
 # %%
 metrics = evaluate(
-    predictions_merged,
+    test_predictions_v2,
     metrics=[mae],
 )
 metrics
@@ -375,6 +392,13 @@ cv_eval_exog
 # ### Simple Rolling Average
 
 # %%
+# Rolling feature used in the CV loop below (20 days × 96 periods)
+filtered_data = filtered_data.sort_values("ds").reset_index(drop=True)
+filtered_data["rolling_avg_20d"] = (
+    filtered_data["y"].rolling(window=96 * 20, min_periods=1).mean()
+)
+
+# %%
 
 # 1. Define the parameters for the windows
 # We want to start by predicting the week starting March 13th
@@ -512,3 +536,61 @@ filtered_data
 data_with_exog
 
 # %%
+
+
+# %% [markdown]
+# ### Persist best ARIMA parameters for submission forecasts
+# The grid below mirrors the main SARIMA candidates used above. The lowest holdout MAE
+# configuration is written to `data/processed/params/ts_params.json` under the key `TARGET_COL`.
+
+# %%
+from sklearn.metrics import mean_absolute_error as _mae
+
+_df = data_indexed.reset_index().rename(columns={"period_start": "ds", TARGET_COL: "y"})[["ds", "y"]]
+_df["unique_id"] = "series_1"
+_test = _df.tail(HORIZON)
+_train = _df.drop(_test.index).reset_index(drop=True)
+
+_ts_candidates = [
+    {"order": (0, 1, 0), "seasonal_order": (1, 1, 1), "alias": "SARIMA (0,1,0,1,1,1,96)"},
+    {"order": (1, 1, 1), "seasonal_order": (1, 1, 1), "alias": "SARIMA (1,1,1,1,1,1,96)"},
+    {"order": (1, 1, 1), "seasonal_order": (2, 1, 1), "alias": "SARIMA (1,1,1,2,1,1,96)"},
+    {"order": (0, 1, 0), "seasonal_order": (0, 1, 3), "alias": "SARIMA (0,1,0,0,1,3,96)"},
+]
+
+_rows = []
+for _c in _ts_candidates:
+    _sf = StatsForecast(
+        models=[
+            ARIMA(
+                order=_c["order"],
+                season_length=96,
+                seasonal_order=_c["seasonal_order"],
+                alias=_c["alias"],
+            )
+        ],
+        freq="15min",
+    )
+    _sf.fit(_train)
+    _pred = _sf.predict(h=HORIZON)
+    _yhat = _pred[_c["alias"]].values
+    _rows.append(
+        {
+            "alias": _c["alias"],
+            "mae": float(_mae(_test["y"].values, _yhat)),
+            "order": list(_c["order"]),
+            "seasonal_order": list(_c["seasonal_order"]),
+        }
+    )
+
+_ts_results = pd.DataFrame(_rows).sort_values("mae").reset_index(drop=True)
+_best = _ts_results.iloc[0].to_dict()
+_existing = load_json(PARAMS_PATH) if PARAMS_PATH.exists() else {}
+_existing[TARGET_COL] = {
+    "target": TARGET_COL,
+    "model": "statsforecast_arima",
+    "horizon": HORIZON,
+    "best_model": _best,
+}
+save_json(_existing, PARAMS_PATH)
+_ts_results
